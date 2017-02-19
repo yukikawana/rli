@@ -3,11 +3,14 @@ from collections import defaultdict
 import re
 import random
 import numpy as np
-import sys
 import math
+import os
+import pickle
+import dill
 
 
 print_move = True
+episode_num = 120000
 
 course = \
 '''\
@@ -48,20 +51,20 @@ lines = course.split('\n')
 lines.reverse()
 width = len(lines[0])
 hight = len(lines)
-q = lambda: -4.
+q = lambda: -6.
 q = lambda: -float('INF')
+q = lambda: -20.
 c = lambda: 0.
 Q = defaultdict(q)
 C = defaultdict(c)
-# ff = lambda: (0, 0)
 eps = 1e-9
 eps = 0.5
 max_speed = 5
 gamma = 1.
-S = 'S'
-X = 'X'
-G = 'G'
-W = 1.
+start_char = 'S'
+goal_char = 'G'
+max_speed = 5
+min_speed = 0
 actions = []
 for x in [-1, 0, 1]:
     for y in [-1, 0,1]:
@@ -71,7 +74,7 @@ pi = defaultdict(ff)
 random.seed(0)
 
 
-def is_intersect(pos1, pos2):
+def interpolation(pos1, pos2):
     if pos2[1] - pos1[1] <= 0:
         return [(y, pos1[1]) for y in xrange(pos1[0], pos2[0]+1)]
     elif pos2[0] - pos1[0] <= 0:
@@ -88,157 +91,129 @@ def is_intersect(pos1, pos2):
 def char_poss(char):
     return [m.start(0) for m in re.finditer(char, lines[0])]
 
+
+def next_state(state, action):
+    current_position = state[0]
+    current_speed = state[1]
+    new_speed = (max(min_speed, min(max_speed, action[0] + current_speed[0])), max(min_speed, min(max_speed, action[1] + current_speed[1])))
+    if new_speed == (0, 0):
+        if random.randint(0,1) == 1:
+            new_speed = (0, 1)
+        else:
+            new_speed = (1, 0)
+    new_position = (current_position[0]+new_speed[0], current_position[1]+new_speed[1])
+    interpolated_line = interpolation(current_position, new_position)
+    reward = -1.
+    for interpolated_position in interpolated_line:
+        if interpolated_position[0] > hight - 1 or interpolated_position[1] > width -1 or lines[interpolated_position[0]][interpolated_position[1]] == ' ':
+            start_position_candidates = char_poss(start_char)
+            start_position = (0, start_position_candidates[random.randint(0, len(start_position_candidates) - 1)])
+            new_position = start_position
+            new_speed = (0, 0)
+            new_state = (new_position, new_speed)
+            return new_state, reward
+        if lines[interpolated_position[0]][interpolated_position[1]] == goal_char:
+            reward = 0.
+            new_state = (new_position, new_speed)
+            return new_state, reward
+    new_state = (new_position, new_speed)
+    return new_state, reward
+
+
 def generate_episode():
     episode = []
-    start_poss = char_poss(S)
-    start_pos = (0, start_poss[random.randint(0, len(start_poss)-1)])
-    speed = (0, 0)
-    state = (start_pos, speed)
+    start_position_candidates = char_poss(start_char)
+    start_position = (0, start_position_candidates[random.randint(0, len(start_position_candidates) - 1)])
+    initial_speed = (0, 0)
+    state = (start_position, initial_speed)
     while True:
-    #for i in xrange(0, 100):
-        mult = np.random.multinomial(1, pi[state], size=1)
-        action = actions[mult.argmax()]
-        #action = actions[random.randint(0, len(actions)-1)]
-        current_pos = state[0]
-        current_speed = state[1]
-        new_speed = (max(0, min(5, action[0] + current_speed[0])), max(0, min(5, action[1] + current_speed[1])))
-        if new_speed == (0, 0):
-            if random.randint(0,1) == 1:
-                new_speed = (0, 1)
-            else:
-                new_speed = (1, 0)
-        new_pos = (current_pos[0]+new_speed[0], current_pos[1]+new_speed[1])
-        reward = -1.
-
-        line = is_intersect(current_pos, new_pos)
-        for ele in line:
-            if ele[0] > hight - 1 or ele[1] > width -1 or lines[ele[0]][ele[1]] == ' ':
-                #print new_pos, hight, width, start_poss, current_pos
-                start_pos = (0, start_poss[random.randint(0, len(start_poss)-1)])
-                new_pos = start_pos
-                new_speed = (0, 0)
-                break
-            if lines[ele[0]][ele[1]] == 'G':
-                reward = 0.
-                episode.append((state, action, reward))
-                return episode
+        action = actions[np.random.multinomial(1, pi[state], size=1).argmax()]
+        new_state, reward = next_state(state, action)
         episode.append((state, action, reward))
-        state = (new_pos, new_speed)
+        state = new_state
+        if reward == 0.:
+            break
     return episode
 
 
-def draw_trajectory():
-    global pi
+def draw_on_course(position, trajectory, char):
+    line = list(trajectory[position[0]])
+    line[position[1]] = char
+    trajectory[position[0]]= ''.join(line)
+    return trajectory
+
+
+def draw_trajectory(start_position_x):
     trajectory = lines[:]
-    start_poss = char_poss(S)
-    goal_poss = char_poss(G)
-    current_pos = (0, start_poss[random.randint(0, len(start_poss)-1)])
-    current_speed = (0, 0)
-    if print_move:
-        line = trajectory[current_pos[0]]
-        line = list(line)
-        line[current_pos[1]] = '#'
-        trajectory[current_pos[0]]= ''.join(line)
-        for line in trajectory:
-            print line
-        # trajectory = lines[:]
+    start_position = (0, start_position_x)
+    initial_speed = (0, 0)
+    state = (start_position, initial_speed)
+    trajectory[:] = draw_on_course(start_position, trajectory, '*')
+    is_start = True
+    G = 0
+    goal_or_course_out = True
     while True:
-        accel = actions[np.asarray(pi[(current_pos, current_speed)]).argmax()]
-        new_speed_y = max(0, min(5, accel[0] + current_speed[0]))
-        new_speed_x = max(0, min(5, accel[1] + current_speed[1]))
-        if new_speed_y == 0 and new_speed_x == 0:
-            if random.randint(0,1) == 1:
-                new_speed_y = 1
+        action = actions[np.asarray(pi[state]).argmax()]
+        new_state, reward = next_state(state, action)
+        G += reward
+        interpolated_line = interpolation(state[0], new_state[0])
+        for interpolated_position in interpolated_line:
+            if interpolated_position[0] > hight - 1 or interpolated_position[1] > width -1 or lines[interpolated_position[0]][interpolated_position[1]] == ' ' or (lines[state[0][0]][state[0][1]] == start_char and not is_start):
+                goal_or_course_out = False
+                return goal_or_course_out, G, trajectory
+            elif lines[interpolated_position[0]][interpolated_position[1]] == 'G':
+                trajectory[:] = draw_on_course(interpolated_position, trajectory, '#')
+                return goal_or_course_out, G, trajectory
             else:
-                new_speed_x = 1
-        new_speed = (new_speed_y, new_speed_x)
-        # new_speed = (max(1, abs(min(5, accel[0] + current_speed[0]))), max(1, abs(min(5, accel[1] + current_speed[1]))))
-        new_pos = (current_pos[0]+new_speed[0], current_pos[1]+new_speed[1])
-        line = is_intersect(current_pos, new_pos)
-        print line, new_pos, current_pos
-        for ele in line:
-            if ele[0] > hight - 1 or ele[1] > width -1 or lines[ele[0]][ele[1]] == ' ':
-                print 'course out'
-                return 0
-            elif lines[ele[0]][ele[1]] == 'G':
-                line1 = trajectory[ele[0]]
-                line1 = list(line1)
-                line1[ele[1]] = '#'
-                trajectory[ele[0]]= ''.join(line1)
-                line2 = trajectory[current_pos[0]]
-                trajectory[current_pos[0]]= ''.join(line2)
-                for line3 in trajectory:
-                    print line3
-                print 'made it!'
-                return 1
-            else:
-                line1 = trajectory[ele[0]]
-                line1 = list(line1)
-                line1[ele[1]] = '.'
-                trajectory[ele[0]]= ''.join(line1)
-        line2 = trajectory[new_pos[0]]
-        line2 = list(line2)
-        line2[new_pos[1]] = '*'
-        trajectory[new_pos[0]]= ''.join(line2)
-        line2 = trajectory[current_pos[0]]
-        line2 = list(line2)
-        line2[current_pos[1]] = '*'
-        trajectory[current_pos[0]]= ''.join(line2)
-        for line3 in trajectory:
-            print line3
-        current_pos = new_pos
-        current_speed = new_speed
-    return 0
+                trajectory[:] = draw_on_course(interpolated_position, trajectory, '.')
+        if not lines[new_state[0][0]][new_state[0][1]] == start_char:
+            trajectory[:] = draw_on_course(new_state[0], trajectory, '*')
+        trajectory[:] = draw_on_course(state[0], trajectory, '*')
+        state = new_state
+        is_start = False
 
+if __name__ == "__main__":
+    filename = 'racetrack_'+str(episode_num)+'.pickle'
+    print filename
+    if not os.path.exists(filename):
+        for count in xrange(0, episode_num):
+            print count,'th episode'
+            W = 1.
+            returns = 0.
+            episode = generate_episode()
+            for state, action, reward in episode[::-1]:
+                returns = returns * gamma + reward
+                C[(state, action)] += W
+                Q[(state, action)] += W / C[(state, action)] * (returns - Q[(state, action)])
+                selected_action = 0
+                for i in xrange(0, len(actions)):
+                    pi[state][i] = eps / float(len(actions))
+                selected_action = np.asarray([Q[(state, a)] for a in actions]).argmax()
+                pi[state][selected_action] = 1. - eps + eps / float(len(actions))
+                if not actions[selected_action] == action:
+                    break
+                else:
+                    W = W * 1. / pi[state][selected_action]
 
-# while True:
-for count in xrange(0, 10000):
-    print 'count ', count
-    W = 1.
-    returns = 0.
-    episode = generate_episode()
-    for state, action, reward in episode[::-1]:
-        print reward
-        #state = t[0]
-        #action = t[1]
-        #reward = t[2]
-        returns = returns * gamma + reward
-        C[(state, action)] += W
-        '''
-        print ''
-        print 'W ', W
-        print 'R ', returns
-        print 'Q ', Q[(states[t], actions[t])]
-        print W / C[(states[t], actions[t])]
-        print  (returns - Q[(states[t], actions[t])])
-        '''
-        Q[(state, action)] += W / C[(state, action)] * (returns - Q[(state, action)])
-        '''
-        print 'Q ', Q[(states[t], actions[t])]
-        print 'C ', C[(states[t], actions[t])]
-        '''
-        # printn actions
-        #print count, 't ', t
-        #'''
-        '''
-        for a in actions:
-            print 'Q#', Q[(state, a)]
-        '''
-        selected_action = 0
-        for i in xrange(0, len(actions)):
-            pi[state][i] = eps / float(len(actions))
-        selected_action = np.asarray([Q[(state, a)] for a in actions]).argmax()
-        pi[state][selected_action] = 1. - eps + eps / float(len(actions))
-        if not actions[selected_action] == action:
-        #if False:
-            break
+        obj = [pi, Q, C]
+        with open(filename, 'wb') as f:
+            pickle.dump(obj, f)
+    else:
+        with open(filename, 'rb') as f:
+            obj = pickle.load(f)
+            pi = obj[0]
+            Q = obj[1]
+            C = obj[2]
+
+    start_positions = char_poss(start_char)
+    for start_position_x in start_positions :
+        print start_positions.index(start_position_x), 'th start position'
+        goal_or_course_out, G, trajectory  = draw_trajectory(start_position_x)
+        for line in trajectory[::-1]:
+            print line
+        if goal_or_course_out:
+            print int(-G), 'steps to reach goal'
         else:
-            #W = W * 1. / pi[states[t]][np.array(states[t]).argmax()]
-            # W = 1.
-            # W = W * 1. / (1. / len(actions))
-            W = W * 1. / pi[state][selected_action]
-            # W = W * pi[states[t]][actions.index(actions[t])] / len(actions)
-        #W = W * pi[states[t]][np.array(states[t]).argmax()] / (1. / len(actions))
-    if draw_trajectory()  == 1:
-        print 'done', count
-        #sys.exit(0)
+            print 'course out'
+        print ''
+        print ''
